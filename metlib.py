@@ -20,7 +20,9 @@ from io import StringIO
 import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
 pd.options.mode.copy_on_write = True
+import logging
 
+my_logger = logging.getLogger(__name__)
 # setup cachier
 root_dir = pathlib.Path(__file__).resolve().parent
 cache_dir = root_dir / 'data' / 'cache'
@@ -50,7 +52,7 @@ def fix_midas_data(input: pd.DataFrame,
     # check all int data is >=0
     for c in cols_int:
         if c.endswith('id') and (data[c].notnull().sum() > 0) and (data[c].min() < 0):
-            print(f'Warning: {c} has negative values')
+            my_logger.warning(f'{c} has negative values')
             data[c] = data[c].clip(lower=0)
     return data
 
@@ -705,43 +707,46 @@ def decode_synop_messages(synop_messages: pd.DataFrame) -> pd.DataFrame:
     # remove the == and = that are sometimes in the messages.
     decoded_synops = []
     for name, message in synops.items():
+        try:
+            decode_raw = pymetdecoder.synop.SYNOP().decode(message.strip())
+            decode_trans = dict()
+            # Extract what we need from the decoded message
+            for key, value in decode.items():
+                v = decode_raw
+                try:
+                    for item in value:
+                        v = v[item]
+                    final_key = specials.get(key, 'value')
+                    decode_trans[key] = v[final_key]
+                    if key in convert_to_knots:  # need to convert to knots
+                        unit = v.get('unit', 'KT')  # assume knots if not specified.
+                        if unit == 'm/s':
+                            decode_trans[key] *= 1.943844  # convert to knots
+                            my_logger.debug(f'converted {key} from {unit} to knots')
+                except (KeyError, TypeError):
+                    decode_trans[key] = None
+            # precipitation is tricky! As comes in form precipitation_sx where x is the time
+            # find the key that is precipitation.
+            for key in decode_raw.keys():
+                if (key.startswith('precipitation_s') and (decode_raw[key] is not None) and
+                        (decode_raw[key].get('amount') is not None)):
+                    decode_trans['precipitation'] = decode_raw[key]['amount']['value']
+                    decode_trans['precipitation_time_code'] = decode_raw[key]['time_before_obs']['_code']
+                    continue
 
-        decode_raw = pymetdecoder.synop.SYNOP().decode(message.strip())
-        decode_trans = dict()
-        # Extract what we need from the decoded message
-        for key, value in decode.items():
-            v = decode_raw
-            try:
-                for item in value:
-                    v = v[item]
-                final_key = specials.get(key, 'value')
-                decode_trans[key] = v[final_key]
-                if key in convert_to_knots:  # need to convert to knots
-                    unit = v.get('unit', 'KT')  # assume knots if not specified.
-                    if unit == 'm/s':
-                        decode_trans[key] *= 1.943844  # convert to knots
-                        print(f'converted {key} from {unit} to knots')
-            except (KeyError, TypeError):
-                decode_trans[key] = None
-        # precipitation is tricky! As comes in form precipitation_sx where x is the time
-        # find the key that is precipitation.
-        for key in decode_raw.keys():
-            if (key.startswith('precipitation_s') and (decode_raw[key] is not None) and
-                    (decode_raw[key].get('amount') is not None)):
-                decode_trans['precipitation'] = decode_raw[key]['amount']['value']
-                decode_trans['precipitation_time_code'] = decode_raw[key]['time_before_obs']['_code']
-                continue
+            # deal with automatic/manual stations
+            wx = decode_raw.get('weather_indicator', None)
+            if wx is None:
+                my_logger.warning(f'No weather indicator for {message.strip()}')
+                decode_trans['operator_type'] = 'UNKNOWN'  # no weather indicator
+            else:
+                decode_trans['operator_type'] = 'AUTOMATIC' \
+                    if decode_raw['weather_indicator'].get('automatic', False) else 'MANUAL'
+            decode_trans = pd.Series(decode_trans).rename(name)
+            decoded_synops.append(decode_trans)
+        except pymetdecoder.DecodeError as e:
+            my_logger.warning(f'Error decoding message {message.strip()}: {e}')
 
-        # deal with automatic/manual stations
-        wx = decode_raw.get('weather_indicator', None)
-        if wx is None:
-            print(f'Warning: no weather indicator for {message.strip()}')
-            decode_trans['operator_type'] = 'UNKNOWN'  # no weather indicator
-        else:
-            decode_trans['operator_type'] = 'AUTOMATIC' \
-                if decode_raw['weather_indicator'].get('automatic', False) else 'MANUAL'
-        decode_trans = pd.Series(decode_trans).rename(name)
-        decoded_synops.append(decode_trans)
     decoded_synops = pd.DataFrame(decoded_synops)
     float_values = ['air_temperature', 'dewpoint', 'wind_speed', 'msl_pressure', 'dp',
                     'wind_direction', 'gust', 'precipitation']
