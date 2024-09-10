@@ -587,7 +587,7 @@ def get_era5_pressure(date: pd.Timestamp,
     # data only available upto 5 days from now
     if (pd.Timestamp.utcnow() - date) < pd.Timedelta(5, 'D'):
         raise ValueError(
-            'ERA-5 data only available upto 5 days from now')  # raise a valuer error -- trap it. But hopefully stops caching.
+            'ERA-5 data only available upto 5 days from now')  # raise a value error -- trap it. But hopefully stops caching.
     dataset = "reanalysis-era5-single-levels"
     area = [region[indx] for indx in [3, 0, 2, 1]]  # ERA-5 area select is NWSE or indices is 3,0,2,1
     request = {
@@ -601,8 +601,7 @@ def get_era5_pressure(date: pd.Timestamp,
         'download_format': 'unarchived',
         'area': area,
     }
-    with tempfile.NamedTemporaryFile(suffix='nc',
-                                     delete_on_close=False) as f:  # used a temp file. Will be deleted when context done.
+    with tempfile.NamedTemporaryFile(suffix='nc',mode='w+b') as f:  # used a temp file. Will be deleted when context done.
         f.close()  # close it so can write to it!
         filename = f.name
         client = cdsapi.Client()  # will need to set up .cdsapirc file. See https://cds-beta.climate.copernicus.eu/how-to-api
