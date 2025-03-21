@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import sys
+import types
 import typing
 import pathlib
 import datetime
@@ -30,7 +32,15 @@ cache_dir.mkdir(exist_ok=True, parents=True)
 cachier.set_default_params(cache_dir=cache_dir, stale_after=datetime.timedelta(weeks=2), next_time=True)
 typ_flt_int = typing.Union[float, int]
 default_region = (-11., 2., 49.0, 61.5)
-
+size_lookup=dict(
+    A0=(46.8,33.1),
+    A1=(33.1,23.4),
+    A2=(23.4,16.5),
+    A3=(16.5,11.7),
+    A4=(11.7,8.3),
+    A5=(8.3,5.8),
+)
+# paper sizes for plotting
 @cachier.cachier()
 def fix_midas_data(input: pd.DataFrame,
                    date_range: typing.Optional[(pd.Timestamp, pd.Timestamp)] = None) -> pd.DataFrame:
@@ -97,6 +107,7 @@ def read_midas_wh_file(path: typing.Union[pathlib.Path],
         data = pd.read_csv(path, header=None, names=hdr, index_col=False, nrows=nrows, parse_dates=time_indices,
                            date_format='ISO8601')
     # times are utc so fix that.
+
     for c in time_cols:
         data[c] = pd.to_datetime(data[c], utc=True)
 
@@ -326,12 +337,13 @@ def current_weather_both(code: typing.Optional[int]) -> str:
     :param code: code to be decoded.
     :return: symbol to be plotted
     """
-    if code is None:
+    if code is None or np.ma.is_masked(code) or pd.isna(code):
         return current_weather(103)  # missing data shown with a //
     if code < 100:
         return current_weather(code)
     else:
-        return current_weather_auto(code - 100)
+        code = code -100
+        return current_weather_auto(code)
 
 
 def auto_stations(code: typing.Optional[int]) -> str:
@@ -347,7 +359,7 @@ def auto_stations(code: typing.Optional[int]) -> str:
 
 class SynopPlot(StationPlot):
     """
-    Class to plot SYNOP data. This is a specialised ubclass of StationPlot
+    Class to plot SYNOP data. This is a specialized ubclass of StationPlot
     """
     text_size_type = typing.Union[int, str, None]
 
@@ -377,11 +389,17 @@ class SynopPlot(StationPlot):
                       operator_type=str)
         if not isinstance(data_values, pd.DataFrame):
             data_values = pd.DataFrame(data_values)
-        self.data_values = data_values.astype(dtypes)
+        # remove all dtyoes that ARE not in the columns
+        dtypes = {key: value for key, value in dtypes.items() if key in data_values.columns}
+        self.data_values = data_values.astype(dtypes,errors='ignore')
         # Set  any zero precip values to missing so they are not plotted.
-        L = self.data_values.precipitation == 0.0
-        self.data_values.loc[L, 'precipitation'] = np.nan
-        self.data_values.loc[L, 'precipitation_time_code'] = pd.NA
+        if 'precipitation' in self.data_values.columns:
+            L = self.data_values.precipitation == 0.0
+            self.data_values.loc[L, 'precipitation'] = np.nan
+            self.data_values.loc[L, 'precipitation_time_code'] = pd.NA
+        else:
+            self.data_values['precipitation'] = np.nan
+            self.data_values['precipitation_time_code'] = pd.NA
         self.text_fontsize = text_fontsize
         self.small_text_fontsize = small_text_fontsize
         self.sym_fontsize = sym_fontsize
@@ -405,28 +423,7 @@ class SynopPlot(StationPlot):
         derived['current_weather_both'] = current_weather
         self.derived = derived
 
-    # @staticmethod
-    # def _to_string_list(vals, fmt): # overwrite the default _to_string_list
-    #     """Convert a sequence of values to a list of strings."""
-    #
-    #     # if fmt is None then reset it to default value. Not sure why this is needed.
-    #     if fmt is None:
-    #         fmt='.0f'
-    #
-    #
-    #     if not callable(fmt):
-    #         def formatter(s):
-    #             """Turn a format string into a callable."""
-    #             if pd.isna(s):
-    #                 return ''
-    #             else:
-    #                 return format(s, fmt)
-    #     else:
-    #         formatter = fmt
-    #     import copy
-    #     result = [formatter(copy.copy(val)) for val in vals] # run the formatter
-    #
-    #     return result
+
     @staticmethod
     def _to_string_list(vals, fmt):
         """Convert a sequence of values to a list of strings."""
@@ -445,7 +442,7 @@ class SynopPlot(StationPlot):
         else:
             formatter = fmt
 
-        return [formatter(v) if pd.notna(v) else '' for v in vals]
+        return [formatter(v) if (np.ma.is_masked(v) or pd.notna(v)) else '' for v in vals]
 
     @staticmethod
     def Int_to_list(vals: pd.Series) -> list:
@@ -477,10 +474,17 @@ class SynopPlot(StationPlot):
             values = self.Int_to_list(values)
         return values
 
-    def plot(self, annotate: typing.Union[dict, bool] = False, **kwargs):
+    def plot(self,
+             simple:bool=False,
+             **kwargs) -> None:
+        """
+        Plot the SYNOP data
+        :param simple: Use a simple plot with less data.
+        :param kwargs: additional arguments to pass to the plotting functions
+        :return:
+        """
 
-        if annotate is True:
-            annotate = dict()  # make it an empty directory/
+
         text_dict = dict(fontsize=self.text_fontsize, fontweight='bold', color='black')
         sym_dict = dict(fontsize=self.sym_fontsize, fontweight='bold', color='black')
         null_format = lambda x: x  # dummy formatter to avoid formatting strings.
@@ -523,6 +527,9 @@ class SynopPlot(StationPlot):
             precipitation_time_code=dict(fontsize=self.small_text_fontsize, ha='left',
                                          formatter=lambda x: mdi_format(x, fmt='1d', mdi='/'), location=(1.5, -1)),
         )
+        if simple:
+            for arg in ['msl_pressure', 'precipitation', 'visibility_code', 'cld_text', 'dp_text', 'gust', 'precipitation_time_code']:
+                text_elements.pop(arg) # remove that element
         for k in text_elements.keys():
             text_elements[k].update(kwargs.get(k, {}))
 
@@ -538,6 +545,10 @@ class SynopPlot(StationPlot):
             high_cloud_type=dict(location=(0, 1.75), symbol_mapper=high_clouds, **sym_dict, va='bottom'),
             past_weather=dict(location='SE', symbol_mapper=past_weather, **sym_dict)
         )
+        if simple:
+            for arg in [ 'dp_pattern', 'past_weather','medium_cloud_type','high_cloud_type','low_cloud_type']:
+                sym_elements.pop(arg)
+
         # and potentially override them
         for key in sym_elements.keys():
             sym_elements[key].update(kwargs.get(key, {}))
@@ -549,13 +560,13 @@ class SynopPlot(StationPlot):
             loc = keywrds.pop('location')
             values = self.extract_data(parameter, fill_value=fill_values.get(parameter))
             if values is not None:
-                self.plot_parameter(loc, values, **keywrds)
+                self.plot_parameter(loc, values,clip_on=True, **keywrds)
 
         for parameter, keywrds in sym_elements.items():
             loc = keywrds.pop('location')
             values = self.extract_data(parameter, fill_value=fill_values.get(parameter))
             if values is not None:
-                self.plot_symbol(loc, values, **keywrds)
+                self.plot_symbol(loc, values, clip_on=True,**keywrds)
 
         # handle automatic stations -- a bit of a hack!
 
@@ -567,13 +578,25 @@ class SynopPlot(StationPlot):
         tt.update(fontweight='black')
         tt.update(symbol_mapper=auto_stations)
 
-        self.plot_symbol(codes=values, **tt)  # triangles for automatic stations.
+        self.plot_symbol(codes=values, clip_on=True,**tt)  # triangles for automatic stations.
+        ## TODO:
+        # 1) Deal with missing wind data. Problem is that plot_barbs does not plot anything if there is missing data.
+        #            Dealing with that requires a change to plot_barbs or some hacked code.
+        # Example case for "2024-10-16 14:00" has  wind direction with  missing speed values.
+        # WMO say (based on old met office thing) what to do when have wind direction but no speed. Put a x on the line.
+        # What to do when have speed but no direction?
+        #metpy.calc.wind_components does not handle missing data. Need to handle missing speed.
+        # Nothing to be done about direction....
+        # 2) Deal with wind between 1 & 2 knots where should have a line but
+        # metpy.plot.plot_barbs plots a circle around the station. No obv way of hacking this
+        # except by patching the underlying matplotlib code. Not sure how to do that.
         u, v = metpy.calc.wind_components(speed=self.data_values.wind_speed.values * units.knots,
                                           wind_direction=self.data_values.wind_direction.values * units.degrees)
-        north = np.cos(np.deg2rad(self.data_values['wind_direction'])) * self.data_values['wind_speed']
-        east = np.sin(np.deg2rad(self.data_values['wind_direction'])) * self.data_values['wind_speed']
 
-        self.plot_barb(u, v, plot_units=units.knots, **barb)  # direction from which wind is coming.
+
+        self.plot_barb(u, v, plot_units=units.knots,clip_on=True, **barb)  # direction from which wind is coming.
+        # Note nothing returned from metpy station plot.
+
 
 
 @cachier.cachier()
@@ -601,10 +624,14 @@ def get_era5_pressure(date: pd.Timestamp,
         'download_format': 'unarchived',
         'area': area,
     }
-    with tempfile.NamedTemporaryFile(suffix='nc',mode='w+b') as f:  # used a temp file. Will be deleted when context done.
+    with tempfile.NamedTemporaryFile(suffix='.nc',mode='w+b') as f:  # used a temp file. Will be deleted when context done.
         f.close()  # close it so can write to it!
         filename = f.name
-        client = cdsapi.Client()  # will need to set up .cdsapirc file. See https://cds-beta.climate.copernicus.eu/how-to-api
+        try:
+            client = cdsapi.Client()  # will need to set up .cdsapirc file. See https://cds-beta.climate.copernicus.eu/how-to-api
+        except Exception as e:
+            my_logger.error('Failure from cdsapi.Client. May need to see up .cdsapirc file. See https://cds-beta.climate.copernicus.eu/how-to-api')
+            raise
         client.retrieve(dataset, request, filename)
         pressure = xarray.load_dataset(filename)  # now load it
     return pressure  #
@@ -612,19 +639,18 @@ def get_era5_pressure(date: pd.Timestamp,
 
 @cachier.cachier()
 def retrieve_synops(date_range: tuple[pd.Timestamp, pd.Timestamp],
-                    use_cache: bool = True,
                     block: typing.Optional[str] = '03',
-                    state: typing.Optional[str] = None) -> pd.DataFrame:
+                    state: typing.Optional[str] = None) -> typing.Optional[pd.DataFrame]:
     """
     Retrieve SYNOP messages from the OGIMET website for a given date range, WMO block and state.
      block and state seem to be mutually exclusive.
     :param date_range:data range to retrieve data for. 0 is min; 1 is max.
-    :param use_cache: If True use the cache if it exists. If False, retrieve the data from the website.
-    :param block: block to use. Default is 33 -- GB & NI
+    :param block: block to use. Default is 03 -- GB & Irelend + Channel Isles + Isle of Mann
     :param state: state to use. Note state='UK' will retrieve all UK data. (GB+NI + overseas territories)
     :return: dataframe of SYNOP messages.
     """
-
+    if (date_range[0].year < 2014):
+        my_logger.warning('Recommend you use midas data prior to 2014 as ogimet coverage sparse prior to then')
     # URL to retrieve the data
     url = 'https://www.ogimet.com/cgi-bin/getsynop'
     if block is not None and state is not None:
@@ -645,34 +671,27 @@ def retrieve_synops(date_range: tuple[pd.Timestamp, pd.Timestamp],
         'User-Agent': 'UniEdinburgh_retr_synop/0.0.1'
     }
 
-    file = 'SYNOP'
-    for p in ['begin', 'end', 'block', 'state']:
-        file += f'_{params[p]}'
-    file += '.csv'
-    save_file = cache_dir / file
-    if save_file.exists() and use_cache:
-        print(f'loading data from {save_file}')
-        synop_messages = pd.read_csv(save_file, index_col=[0], parse_dates=['ob_time'])
-    else:  # retrieve it
-        print(f'Retrieving data from {url}')
-        # Send an HTTP GET request to the URL with additional keyword arguments
-        response = requests.get(url, params=params, headers=headers, timeout=10)
+    #print(f'Retrieving data from {url}')
+    # Send an HTTP GET request to the URL with additional keyword arguments
+    response = requests.get(url, params=params, headers=headers, timeout=10)
 
-        # Check if the request was successful
-        if response.status_code == 200:
-            # Read the CSV data from the response content
-            synop_messages = pd.read_csv(StringIO(response.text))
-            # Fix the columns names so they are in English
-            translate = dict(
-                zip(synop_messages.columns, ['Station', 'Year', 'Month', 'Day', 'Hour', 'Minute', 'Synop']))
-            synop_messages = synop_messages.rename(columns=translate)
-            time_cols = ['Year', 'Month', 'Day', 'Hour', 'Minute']
-            synop_messages['ob_time'] = pd.to_datetime(synop_messages[time_cols], utc=True)
-            synop_messages = synop_messages.drop(columns=time_cols)
-            print(synop_messages.head())  # Display the first few rows of the dataframe
-            synop_messages.to_csv(save_file)  # save the file for later use.
-        else:
-            raise ValueError(f'Failed to retrieve data: {response.status_code}')
+    # Check if the request was successful
+    if response.status_code == 200:
+        # Read the CSV data from the response content
+        synop_messages = pd.read_csv(StringIO(response.text))
+        if len(synop_messages) == 0: # nothing
+            my_logger.warning('No data retrieved')
+            return None
+        # Fix the columns names so they are in English
+        translate = dict(
+            zip(synop_messages.columns, ['Station', 'Year', 'Month', 'Day', 'Hour', 'Minute', 'Synop']))
+        synop_messages = synop_messages.rename(columns=translate)
+        time_cols = ['Year', 'Month', 'Day', 'Hour', 'Minute']
+        synop_messages['ob_time'] = pd.to_datetime(synop_messages[time_cols], utc=True)
+        synop_messages = synop_messages.drop(columns=time_cols)
+
+    else:
+        raise ValueError(f'Failed to retrieve data: {response.status_code}')
     return synop_messages
 
 
@@ -684,10 +703,12 @@ def decode_synop_messages(synop_messages: pd.DataFrame) -> pd.DataFrame:
     """
 
     specials = dict(cloud_base_height_code='_code',
+                    cloud_base_height='min',
                     visibility_code='_code')  # special cases where we want something else than the value
     # for each element we want to provide a path to the element in the decoded message.
     decode = dict(cloud_base_amount=['cloud_layer', 0, 'cloud_cover'],
                   cloud_base_height_code=['lowest_cloud_base'],
+                  cloud_base_height=['lowest_cloud_base'],
                   msl_pressure=['sea_level_pressure'],
                   air_temperature=['air_temperature'], dewpoint=['dewpoint_temperature'],
                   wind_speed=['surface_wind', 'speed'],
@@ -720,8 +741,8 @@ def decode_synop_messages(synop_messages: pd.DataFrame) -> pd.DataFrame:
                     if key in convert_to_knots:  # need to convert to knots
                         unit = v.get('unit', 'KT')  # assume knots if not specified.
                         if unit == 'm/s':
-                            decode_trans[key] *= 1.943844  # convert to knots
-                            my_logger.debug(f'converted {key} from {unit} to knots')
+                            decode_trans[key] = decode_trans[key]*1.943844  # convert to knots
+                            my_logger.debug(f'converted {name} from {unit} to knots')
                 except (KeyError, TypeError):
                     decode_trans[key] = None
             # precipitation is tricky! As comes in form precipitation_sx where x is the time
@@ -759,7 +780,7 @@ def decode_synop_messages(synop_messages: pd.DataFrame) -> pd.DataFrame:
 
 @cachier.cachier()
 def read_isd_metadata(file: typing.Optional[pathlib.Path] = None,
-                      country: typing.Optional[str | tuple[str]] = None,
+                      country: typing.Optional[str | tuple[str,...]] = None,
                       use_cache: bool = True) -> pd.DataFrame:
     """
     Read the ISD metadata file and return a dataframe with the data.
@@ -866,8 +887,11 @@ def read_synops(date: pd.Timestamp = pd.Timestamp.utcnow(),
         isd = read_isd_metadata(country=('UK', 'EI'), cachier__skip_cache=nocache)  # extract the UK data
         # now convert USAF locations to WMO locations. -- first five values.
         isd['wmo_station_id'] = isd.USAF.str[0:5].astype('Int32')
-        isd = isd.rename(columns=dict(LON='longitude', LAT='latitude'))
+        rename_cols = {'LAT': 'latitude', 'LON': 'longitude','STATION NAME':'srce_name','ELEV(M)':'height'}
+        isd = isd.rename(columns=rename_cols)
         synops = retrieve_synops(date_range, state=None, cachier__skip_cache=nocache)
+        if (synops is None) or len(synops) == 0:
+            return None, None
         decoded_synops = decode_synop_messages(synops)
         # add on meta-data
         decoded_synops = decoded_synops.merge(isd, left_on='wmo_station_id', right_on='wmo_station_id')
@@ -892,16 +916,33 @@ def read_synops(date: pd.Timestamp = pd.Timestamp.utcnow(),
 
 def plot_synops(synops: pd.DataFrame,
                 pressure: typing.Optional[xarray.Dataset] = None,
+                pressure_labels:bool = True,
                 thin: float = 100.,
                 figsize: tuple[float, float] = (10, 10),  #
-                region: tuple[float, float, float, float] = (-11., 2., 49.0, 61.5)
-                ) -> tuple[plt.Figure, plt.Axes]:
+                figname: str = 'synop_plot',
+                region: tuple[float, float, float, float] = (-11., 2., 49.0, 61.5),
+                fontsize:int =11,
+                simple:bool = False,
+                black:bool = False,
+                mountain:bool = False,
+                priority_stations:list[str] = None,
+                ax:typing.Optional[plt.Axes] = None,
+                ) -> tuple[plt.Figure, plt.Axes,pd.DataFrame]:
     """"
     Plot the SYNOP data on a map.
-    :param synops: dataframe of SYNOP data.
+     :param synops: dataframe of SYNOP data.
     :param pressure: xarray dataset of pressure data. (If None not plotted)
+    :param region: region to plot the data for. (long0, long1, lat0, lat1)
     :param thin: thinning distance in km.
     :param figsize: size of the figure.
+    Following parameters are for gneration of maps for students! (or exam questions)
+    :param simple: If True use a simple plot with less data.
+    :param fontsize: Size of font to use
+    :param black: If True, use black text.
+    :param mountain: If True, increase priority where height > 500 m.
+    :param priority_stations: Names of priority stations to plot. If one of names is in the station name, it gets a boost.
+    :param pressure_labels: if True labels will be plotted.
+
 
     :returns: matplotlib figure and ax.
     """
@@ -913,11 +954,20 @@ def plot_synops(synops: pd.DataFrame,
     priority = np.where(synops.operator_type == 'MANUAL', 10, 0)
     # increase priority where have present_weather.
     priority[synops.present_weather.notnull()] = priority[synops.present_weather.notnull()] + 5
+    # if moutain, increase priority where ht > 500 m
+    if mountain:
+        L = synops.height > 500
+        priority[L] = priority[L] + 5
+    # match on names. Those get a boost of 10
+    if priority_stations is not None:
+        pattern = '|'.join(priority_stations)
+        L = synops.srce_name.str.contains(pattern,na=False,case=False)
+        priority[L] = priority[L] + 10
     synops_to_plot = synops[reduce_point_density(point_locs, thin * 1e3, priority=priority)]
     # plot the data
     # default tweaked plotting arguments
     cloud_type = dict(color='black')
-    weather = dict(color='black', fontsize=11)
+    weather = dict(color='black', fontsize=fontsize*1.1)
     kwrds = dict(
         low_cloud_type=cloud_type,
         medium_cloud_type=cloud_type,
@@ -930,34 +980,45 @@ def plot_synops(synops: pd.DataFrame,
         dewpoint=dict(color='green'),
 
     )
+    if black:
+        for k in kwrds.keys():
+            kwrds[k].update(color='black')
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=figsize, subplot_kw=dict(projection=proj), clear=True,
+                               layout='constrained', num=figname)
 
-    fig, ax = plt.subplots(1, 1, figsize=figsize, subplot_kw=dict(projection=proj), clear=True,
-                           layout='tight', num='synop_circ')
-
-    ax.set_extent(region, crs=ccrs.PlateCarree())
-    ax.coastlines(color='grey', linewidth=1)
-    ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False, color='grey')
+        ax.set_extent(region, crs=ccrs.PlateCarree())
+        ax.coastlines(color='grey', linewidth=1)
+        ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False, color='grey',
+                     xlabel_style=dict(size=fontsize),ylabel_style=dict(size=fontsize))
+    else:
+        fig = ax.figure
     # plot the pressure (if we have it)
     if pressure is not None:
         p = pressure.msl.squeeze(drop=True) / 100  # convert to hPa
-        cs = p.plot.contour(ax=ax, transform=ccrs.PlateCarree(), colors='grey', levels=range(960, 1040, 4), zorder=-200)
-        ax.clabel(cs, inline=True, fontsize=10, zorder=-200, colors='grey')
-    stns = SynopPlot(ax, synops_to_plot.longitude, synops_to_plot.latitude, synops_to_plot,
-                     transform=ccrs.PlateCarree(),
-                     text_fontsize=10, small_text_fontsize=8, clip_on=True)
-    stns.plot(**kwrds)  # plot them.  Override anything that needs overwritten here
-    ax.set_title(f'{synops_to_plot.ob_time.unique()[0]}')
-    return fig, ax
+        cs = p.plot.contour(ax=ax, transform=ccrs.PlateCarree(), colors='grey', levels=range(940, 1052, 4), zorder=-200)
+        if pressure_labels:
 
-def clear_cache(module):
+            ax.clabel(cs, inline=True, fontsize=10, zorder=-200, colors='grey')
+    stns = SynopPlot(ax, synops_to_plot.longitude, synops_to_plot.latitude, synops_to_plot,
+                     transform=ccrs.PlateCarree(),fontsize=fontsize,
+                      clip_on=True)
+    stns.plot(simple=simple,**kwrds)  # plot them.  Override anything that needs overwritten here
+    ax.set_title(f'{synops_to_plot.ob_time.unique()[0]}',fontsize=1.4*fontsize)
+    return fig, ax,synops_to_plot
+
+def clear_cache(module:typing.Optional[types.ModuleType] = None):
     """
 
     :return: Nothing
-    Clear cache for all functions in a module.
+    Clear cache for all functions in a module. Default is module where this function is defined.
     Does by finding all callables that have a clear_cache method and calling it.
     """
     import inspect
+    if module is None:
+        module = sys.modules[__name__]
     for (name,thing) in inspect.getmembers(module):
         if callable(thing) and hasattr(thing, 'clear_cache'):
             print(name)
             thing.clear_cache()
+
