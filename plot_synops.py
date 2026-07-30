@@ -28,7 +28,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Plot SYNOP data for Great Britain and Ireland. Could be extended to other regions.')
     parser.add_argument('--date', type=pd.Timestamp,
-                        help='UTC date/time to plot data for. Defualt is now minus 1 hour ',
+                        help='UTC date/time to plot data for. Default is now minus 1 hour. Format is YYYY-MM-DDTHH ',
                         default=None)
     parser.add_argument('--thin', type=float, help='Thin distance in km', default=40.)
     parser.add_argument('--output', type=pathlib.Path,

@@ -18,3 +18,4 @@ setuptools # proves pkg_resources used to cdsapi
 netcdf4
 matplotlib-scalebar # for scalebars
 nc-time-axis>=1.2.0 # for time axis
+fsspec # for remote access

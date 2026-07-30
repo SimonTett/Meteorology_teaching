@@ -389,7 +389,7 @@ class SynopPlot(StationPlot):
                       operator_type=str)
         if not isinstance(data_values, pd.DataFrame):
             data_values = pd.DataFrame(data_values)
-        # remove all dtyoes that ARE not in the columns
+        # remove all dtypes that ARE not in the columns
         dtypes = {key: value for key, value in dtypes.items() if key in data_values.columns}
         self.data_values = data_values.astype(dtypes,errors='ignore')
         # Set  any zero precip values to missing so they are not plotted.
@@ -528,7 +528,7 @@ class SynopPlot(StationPlot):
                                          formatter=lambda x: mdi_format(x, fmt='1d', mdi='/'), location=(1.5, -1)),
         )
         if simple:
-            for arg in ['msl_pressure', 'precipitation', 'visibility_code', 'cld_text', 'dp_text', 'gust', 'precipitation_time_code']:
+            for arg in [ 'precipitation', 'visibility_code',  'precipitation_time_code']:
                 text_elements.pop(arg) # remove that element
         for k in text_elements.keys():
             text_elements[k].update(kwargs.get(k, {}))
@@ -546,7 +546,7 @@ class SynopPlot(StationPlot):
             past_weather=dict(location='SE', symbol_mapper=past_weather, **sym_dict)
         )
         if simple:
-            for arg in [ 'dp_pattern', 'past_weather','medium_cloud_type','high_cloud_type','low_cloud_type']:
+            for arg in [  'past_weather','current_weather_both','medium_cloud_type','high_cloud_type','low_cloud_type']:
                 sym_elements.pop(arg)
 
         # and potentially override them
@@ -927,6 +927,7 @@ def plot_synops(synops: pd.DataFrame,
                 mountain:bool = False,
                 priority_stations:list[str] = None,
                 ax:typing.Optional[plt.Axes] = None,
+                drop_variables:typing.Optional[list[str]] = None
                 ) -> tuple[plt.Figure, plt.Axes,pd.DataFrame]:
     """"
     Plot the SYNOP data on a map.
@@ -935,13 +936,15 @@ def plot_synops(synops: pd.DataFrame,
     :param region: region to plot the data for. (long0, long1, lat0, lat1)
     :param thin: thinning distance in km.
     :param figsize: size of the figure.
-    Following parameters are for gneration of maps for students! (or exam questions)
+    :param drop_variables: List of variables to drop from the synops dataframe before plotting.
+    Following parameters are for generation of maps for students! (or exam questions)
     :param simple: If True use a simple plot with less data.
     :param fontsize: Size of font to use
     :param black: If True, use black text.
     :param mountain: If True, increase priority where height > 500 m.
     :param priority_stations: Names of priority stations to plot. If one of names is in the station name, it gets a boost.
     :param pressure_labels: if True labels will be plotted.
+
 
 
     :returns: matplotlib figure and ax.
@@ -954,7 +957,7 @@ def plot_synops(synops: pd.DataFrame,
     priority = np.where(synops.operator_type == 'MANUAL', 10, 0)
     # increase priority where have present_weather.
     priority[synops.present_weather.notnull()] = priority[synops.present_weather.notnull()] + 5
-    # if moutain, increase priority where ht > 500 m
+    # if mountain, increase priority where ht > 500 m
     if mountain:
         L = synops.height > 500
         priority[L] = priority[L] + 5
@@ -964,6 +967,9 @@ def plot_synops(synops: pd.DataFrame,
         L = synops.srce_name.str.contains(pattern,na=False,case=False)
         priority[L] = priority[L] + 10
     synops_to_plot = synops[reduce_point_density(point_locs, thin * 1e3, priority=priority)]
+    # and drop columnms we do not want to plot
+    if drop_variables is not None:
+        synops_to_plot = synops_to_plot.drop(columns=drop_variables,errors='ignore')
     # plot the data
     # default tweaked plotting arguments
     cloud_type = dict(color='black')
